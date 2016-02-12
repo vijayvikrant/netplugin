@@ -622,6 +622,11 @@ func AddRoutes(router *mux.Router) {
 	router.Path(route).Methods("PUT").HandlerFunc(makeHttpHandler(httpCreateVolumeProfile))
 	router.Path(route).Methods("DELETE").HandlerFunc(makeHttpHandler(httpDeleteVolumeProfile))
 
+	route = "/api/network_event/{key}/"
+	listRoute = "/api/network_event/"
+	log.Infof("Registering %s", route)
+	router.Path(route).Methods("POST").HandlerFunc(makeHttpHandler(httpProcessCreateNetwork))
+	router.Path(route).Methods("DELETE").HandlerFunc(makeHttpHandler(httpProcessDeleteNetwork))
 }
 
 // LIST REST call
@@ -3558,4 +3563,65 @@ func ValidateVolumeProfile(obj *VolumeProfile) error {
 	// Validate each field
 
 	return nil
+}
+
+// CREATE REST call
+func httpProcessCreateNetwork(w http.ResponseWriter, r *http.Request, vars map[string]string) (interface{}, error) {
+	log.Debugf("Received httpProcessCreateNetwork: %+v", vars)
+
+	var obj Network
+	key := vars["key"]
+
+	// Get object from the request
+	err := json.NewDecoder(r.Body).Decode(&obj)
+	if err != nil {
+		log.Errorf("Error decoding httpProcessCreateNetwork request. Err %v", err)
+		return nil, err
+	}
+
+	// Validate parameters
+	err = ValidateNetwork(&obj)
+	if err != nil {
+		log.Errorf("ValidateNetwork returned error for: %+v. Err: %v", obj, err)
+		return nil, err
+	}
+
+	// set the key
+	obj.Key = key
+
+	collections.networks[obj.Key] = &obj
+
+	// Write it to modeldb
+	err = obj.Write()
+	if err != nil {
+		log.Errorf("Error saving Network %s to db. Err: %v", obj.Key, err)
+		return nil, err
+	}
+
+	// Return the obj
+	return obj, nil
+}
+
+// CREATE REST call
+func httpProcessDeleteNetwork(w http.ResponseWriter, r *http.Request, vars map[string]string) (interface{}, error) {
+	log.Debugf("Received httpProcessDeleteNetwork: %+v", vars)
+
+	key := vars["key"]
+	obj := collections.networks[key]
+	if obj == nil {
+		log.Errorf("network %s not found", key)
+		return nil, errors.New("network not found")
+	}
+
+	// delete it from modeldb
+	err := obj.Delete()
+	if err != nil {
+		log.Errorf("Error deleting network %s. Err: %v", obj.Key, err)
+	}
+
+	// delete it from cache
+	delete(collections.networks, key)
+
+	return key, nil
+
 }

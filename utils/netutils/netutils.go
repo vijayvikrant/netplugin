@@ -16,9 +16,12 @@ limitations under the License.
 package netutils
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io/ioutil"
 	"net"
+	"net/http"
 	"strconv"
 	"strings"
 	"unsafe"
@@ -363,4 +366,71 @@ func GetFirstLocalAddr() (string, error) {
 	}
 
 	return "", errors.New("No address was found")
+}
+
+// HTTPPost performs http POST operation
+func HTTPPost(url string, req interface{}) error {
+	// Convert the req to json
+	jsonStr, err := json.Marshal(req)
+	if err != nil {
+		log.Errorf("Error converting request data(%#v) to Json. Err: %v", req, err)
+		return err
+	}
+
+	// Perform HTTP POST operation
+	res, err := http.Post(url, "application/json", strings.NewReader(string(jsonStr)))
+	if err != nil {
+		log.Errorf("Error during http get. Err: %v", err)
+		return err
+	}
+
+	// Check the response code
+	if res.StatusCode != http.StatusOK {
+		log.Errorf("HTTP error response. Status: %s, StatusCode: %d", res.Status, res.StatusCode)
+		return errors.New("HTTP Error response")
+	}
+
+	// Read the entire response
+	_, err = ioutil.ReadAll(res.Body)
+	if err != nil {
+		log.Errorf("Error during ioutil readall. Err: %v", err)
+		return err
+	}
+
+	return nil
+}
+
+// HTTPDelete performs a http DELETE operation
+func HTTPDelete(url string) error {
+
+	req, err := http.NewRequest("DELETE", url, nil)
+
+	r, err := http.DefaultClient.Do(req)
+	if err != nil {
+		panic(err)
+	}
+	defer r.Body.Close()
+
+	// body, _ := ioutil.ReadAll(r.Body)
+
+	switch {
+	case r.StatusCode == int(404):
+		// return errors.New("Page not found!")
+		return nil
+	case r.StatusCode == int(403):
+		return errors.New("Access denied!")
+	case r.StatusCode == int(500):
+		response, err := ioutil.ReadAll(r.Body)
+		if err != nil {
+			return err
+		}
+
+		return errors.New(string(response))
+
+	case r.StatusCode != int(200):
+		log.Debugf("DELETE Status '%s' status code %d \n", r.Status, r.StatusCode)
+		return errors.New(r.Status)
+	}
+
+	return nil
 }

@@ -222,6 +222,8 @@ func (d *daemon) ListenAndServe() {
 	s.HandleFunc("/plugin/releaseAddress", makeHTTPHandler(master.ReleaseAddressHandler))
 	s.HandleFunc("/plugin/createEndpoint", makeHTTPHandler(master.CreateEndpointHandler))
 	s.HandleFunc("/plugin/deleteEndpoint", makeHTTPHandler(master.DeleteEndpointHandler))
+	s.HandleFunc("/plugin/createNetwork", makeHTTPHandler(master.CreateNetworkHandler))
+	s.HandleFunc("/plugin/deleteNetwork", makeHTTPHandler(master.DeleteNetworkHandler))
 
 	s = router.Methods("Get").Subrouter()
 	s.HandleFunc(fmt.Sprintf("/%s/%s", master.GetEndpointRESTEndpoint, "{id}"),

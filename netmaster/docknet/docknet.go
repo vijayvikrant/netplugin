@@ -127,6 +127,7 @@ func CreateDockNet(tenantName, networkName, serviceName string, nwCfg *mastercfg
 		} else {
 			netPluginOptions["pkt-tag"] = strconv.Itoa(nwCfg.PktTag)
 		}
+		netPluginOptions["netctl-triggered"] = "true"
 
 		// Build network parameters
 		nwCreate := dockerclient.NetworkCreate{

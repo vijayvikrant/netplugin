@@ -441,7 +441,7 @@ func (ac *APIController) NetworkCreate(network *contivModel.Network) error {
 	}
 
 	// Create the network
-	err = master.CreateNetwork(networkCfg, stateDriver, network.TenantName)
+	err = master.CreateNetwork(networkCfg, stateDriver, network.TenantName, true)
 	if err != nil {
 		log.Errorf("Error creating network {%+v}. Err: %v", network, err)
 		return err
@@ -483,7 +483,7 @@ func (ac *APIController) NetworkDelete(network *contivModel.Network) error {
 
 	// Delete the network
 	networkID := network.NetworkName + "." + network.TenantName
-	err = master.DeleteNetworkID(stateDriver, networkID)
+	err = master.DeleteNetworkID(stateDriver, networkID, true)
 	if err != nil {
 		log.Errorf("Error deleting network %s. Err: %v", network.NetworkName, err)
 	}

@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 
 	log "github.com/Sirupsen/logrus"
@@ -55,12 +56,71 @@ func deleteNetwork(w http.ResponseWriter, r *http.Request) {
 		dnreq   = api.DeleteNetworkRequest{}
 	)
 
-	logEvent("delete network")
+	logEvent("Received network delete event")
 
 	err = decoder.Decode(&dnreq)
 	if err != nil {
 		httpError(w, "Could not read and parse the delete network request", err)
 		return
+	}
+
+	log.Infof("DeleteNetworkRequest: %+v", dnreq)
+
+	tenantName, netName, _, err := GetDockerNetworkName(dnreq.NetworkID)
+	if err != nil {
+		log.Errorf("Error getting network name for UUID: %s. Err: %v", dnreq.NetworkID, err)
+		httpError(w, "Could not get network name", err)
+		return
+	}
+
+	// The Network Name in stateStore could be "name" or "UUID"
+	netID := netName + "." + tenantName
+	nw, err := netdGetNetwork(netID)
+	if err != nil {
+		// If we are using network UUID as name
+		// This will happen when user created the network using docker commands
+		// and did not specify a `-o name`
+		netID = dnreq.NetworkID + "." + tenantName
+		nw, err = netdGetNetwork(netID)
+		if err != nil {
+			httpError(w, "network is not found", err)
+			return
+		}
+	}
+
+	// A network can be created via netctl cli and docker cli
+	// This routine handles deletes for networks created via docker cli
+	// This prevents loops in the code flow
+
+	// create docker client
+	docker, err := dockerclient.NewDockerClient("unix:///var/run/docker.sock", nil)
+	if err != nil {
+		log.Errorf("Unable to connect to docker. Error %v", err)
+		httpError(w, "Could not connect to docker", err)
+		return
+	}
+
+	ninfo, err := docker.InspectNetwork(dnreq.NetworkID)
+	if err != nil {
+		log.Errorf("Error getting network info for %s. Err: %v", dnreq.NetworkID, err)
+		httpError(w, "Error getting network info", err)
+		return
+	}
+
+	if ninfo.Options["netctl-triggered"] != "true" {
+		netReq := master.DeleteNetworkRequest{
+			TenantName:  "default",
+			NetworkName: nw.NetworkName,
+		}
+
+		var netResp master.DeleteNetworkResponse
+		err = cluster.MasterPostReq("/plugin/deleteNetwork", &netReq, &netResp)
+		if err != nil {
+			httpError(w, "netmaster failed to delete network", err)
+			return
+		}
+
+		log.Infof("delete network response. %+v", netResp)
 	}
 
 	dnresp := api.DeleteNetworkResponse{}
@@ -80,7 +140,7 @@ func createNetwork(w http.ResponseWriter, r *http.Request) {
 		cnreq   = api.CreateNetworkRequest{}
 	)
 
-	logEvent("create network")
+	logEvent("Received network create Event")
 
 	err = decoder.Decode(&cnreq)
 	if err != nil {
@@ -89,6 +149,67 @@ func createNetwork(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Infof("CreateNetworkRequest: %+v", cnreq)
+
+	// Options are passed by docker only in network create.
+	// These are not present while doing a network delete
+	// so, we always assume default value for tenant
+	options := cnreq.Options["com.docker.network.generic"].(map[string]interface{})
+
+	// This code path will execute in the below two conditions
+	// #1 `docker network create`
+	// #2 `netctl network create` calling `docker network create`
+	// for #1 we need to do network addition in netmaster
+	// for #2, the network is already available in netmaster.
+	// 		we need to just return success to avoid a loop.
+	if options["netctl-triggered"] == nil {
+		var pktTag int
+		var netName, encap string
+		if options["encap"] != nil {
+			encap = options["encap"].(string)
+		} else {
+			encap = "vxlan"
+		}
+
+		// if a name property is specified in options, then
+		// use it as the network name. Otherwise stick to the UUID.
+		// When using name, we don't save UUID.
+		// When the network delete is docker triggered, we get UUID only.
+		// We will do a inspect for UUID and fetch name in this case.
+		if options["name"] != nil {
+			netName = options["name"].(string)
+		} else {
+			netName = cnreq.NetworkID
+		}
+
+		if options["pkt-tag"] != nil {
+			pktTag, err = strconv.Atoi(options["pkt-tag"].(string))
+			if err != nil {
+				httpError(w, "Could not parse the pkt-tag option", err)
+				return
+			}
+		}
+
+		netReq := master.CreateNetworkRequest{
+			TenantName:  "default",
+			NetworkName: netName,
+			ConfigNetwork: intent.ConfigNetwork{
+				Name:       netName,
+				PktTagType: encap,
+				PktTag:     pktTag,
+				SubnetCIDR: cnreq.IPv4Data[0].Pool.String(),
+				Gateway:    strings.Split(cnreq.IPv4Data[0].Gateway.String(), "/")[0],
+			},
+		}
+
+		var netResp master.CreateNetworkResponse
+		err = cluster.MasterPostReq("/plugin/createNetwork", &netReq, &netResp)
+		if err != nil {
+			httpError(w, "netmaster failed to create network", err)
+			return
+		}
+
+		log.Infof("create network response. %+v", netResp)
+	}
 
 	cnresp := api.CreateNetworkResponse{}
 	content, err = json.Marshal(cnresp)

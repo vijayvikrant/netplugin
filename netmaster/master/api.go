@@ -23,9 +23,12 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/contiv/contivmodel"
 	"github.com/contiv/netplugin/netmaster/intent"
 	"github.com/contiv/netplugin/netmaster/mastercfg"
 	"github.com/contiv/netplugin/utils"
+	"github.com/contiv/netplugin/utils/netutils"
+	"github.com/contiv/objdb/modeldb"
 
 	log "github.com/Sirupsen/logrus"
 )
@@ -47,6 +50,29 @@ type AddressAllocResponse struct {
 type AddressReleaseRequest struct {
 	NetworkID   string // Unique identifier for the network
 	IPv4Address string // Allocated address
+}
+
+// CreateNetworkRequest has the network create request from netplugin
+type CreateNetworkRequest struct {
+	TenantName    string               // tenant name
+	NetworkName   string               // network name
+	ConfigNetwork intent.ConfigNetwork // Endpoint configuration
+}
+
+// CreateNetworkResponse has the network create response from netmaster
+type CreateNetworkResponse struct {
+	Err error
+}
+
+// DeleteNetworkRequest has the network create request from netplugin
+type DeleteNetworkRequest struct {
+	TenantName  string // tenant name
+	NetworkName string // network name
+}
+
+// DeleteNetworkResponse has the network create response from netmaster
+type DeleteNetworkResponse struct {
+	Err error
 }
 
 // CreateEndpointRequest has the endpoint create request from netplugin
@@ -288,4 +314,131 @@ func DeleteEndpointHandler(w http.ResponseWriter, r *http.Request, vars map[stri
 
 	// done. return resp
 	return delResp, nil
+}
+
+// CreateNetworkHandler handles network create requests from docker/mesos etc.
+func CreateNetworkHandler(w http.ResponseWriter, r *http.Request, vars map[string]string) (interface{}, error) {
+	var cnReq CreateNetworkRequest
+
+	// Get object from the request
+	err := json.NewDecoder(r.Body).Decode(&cnReq)
+	if err != nil {
+		log.Errorf("Error decoding AllocAddressHandler. Err %v", err)
+		return nil, err
+	}
+
+	log.Infof("Received CreateNetworkRequest: %+v", cnReq)
+
+	tenant := contivModel.FindTenant(cnReq.TenantName)
+	if tenant == nil {
+		log.Errorf("Tenant not found")
+		return nil, fmt.Errorf("Tenant not found")
+	}
+
+	nwCfg := cnReq.ConfigNetwork
+
+	var network contivModel.Network
+	network.Key = cnReq.TenantName + ":" + nwCfg.Name
+	network.Encap = nwCfg.PktTagType
+	network.Gateway = nwCfg.Gateway
+	network.NetworkName = nwCfg.Name
+	network.PktTag = nwCfg.PktTag
+	network.Subnet = nwCfg.SubnetCIDR
+	network.TenantName = cnReq.TenantName
+
+	// Make a request to contivModel to create the network in the state store
+	path := "http://localhost:9999/api/network_event/" + cnReq.TenantName + ":" + nwCfg.Name + "/"
+	err = netutils.HTTPPost(path, &network)
+	if err != nil {
+		log.Errorf("master failed to delete endpoint. Err:%v", err)
+		return nil, err
+	}
+
+	// Setup links
+	modeldb.AddLink(&network.Links.Tenant, tenant)
+	modeldb.AddLinkSet(&tenant.LinkSets.Networks, &network)
+
+	err = network.Write()
+	if err != nil {
+		log.Errorf("CreateNetwork error for: %+v Err: %v", network, err)
+		return nil, err
+	}
+
+	// Save the tenant too since we added the links
+	err = tenant.Write()
+	if err != nil {
+		log.Errorf("Error updating tenant state(%+v). Err: %v", tenant, err)
+		return nil, err
+	}
+
+	// Gte the state driver
+	stateDriver, err := utils.GetStateDriver()
+	if err != nil {
+		return nil, err
+	}
+
+	// Create the network
+	// The below needs an another option to skip sending a network create back to docker
+	err = CreateNetwork(cnReq.ConfigNetwork, stateDriver, cnReq.TenantName, false)
+	if err != nil {
+		log.Errorf("Error creating network {%+v}. Err: %v", cnReq.ConfigNetwork, err)
+		return nil, err
+	}
+
+	netResp := CreateNetworkResponse{
+		Err: err,
+	}
+
+	return netResp, nil
+}
+
+// DeleteNetworkHandler handles network delete requests from docker/mesos etc.
+func DeleteNetworkHandler(w http.ResponseWriter, r *http.Request, vars map[string]string) (interface{}, error) {
+	var dnReq DeleteNetworkRequest
+
+	// Get object from the request
+	err := json.NewDecoder(r.Body).Decode(&dnReq)
+	if err != nil {
+		log.Errorf("Error decoding AllocAddressHandler. Err %v", err)
+		return nil, err
+	}
+
+	log.Infof("Received DeleteNetworkRequest: %+v", dnReq)
+
+	tenant := contivModel.FindTenant(dnReq.TenantName)
+	if tenant == nil {
+		log.Errorf("Tenant not found")
+		return nil, fmt.Errorf("Tenant not found")
+	}
+
+	// TODO
+	// RemoveLinkSet for the network
+
+	// Gte the state driver
+	stateDriver, err := utils.GetStateDriver()
+	if err != nil {
+		return nil, err
+	}
+
+	// Create the network
+	// The below needs an another option to skip sending a network create back to docker
+	err = DeleteNetworkID(stateDriver, dnReq.NetworkName+"."+dnReq.TenantName, false)
+	if err != nil {
+		log.Errorf("Error deleting network {%+v}. Err: %v", dnReq, err)
+		return nil, err
+	}
+
+	// Make a request to contivModel to create the network in the state store
+	path := "http://localhost:9999/api/network_event/" + dnReq.TenantName + ":" + dnReq.NetworkName + "/"
+	err = netutils.HTTPDelete(path)
+	if err != nil {
+		log.Errorf("master failed to delete endpoint. Err:%v", err)
+		return nil, err
+	}
+
+	netResp := DeleteNetworkResponse{
+		Err: err,
+	}
+
+	return netResp, nil
 }

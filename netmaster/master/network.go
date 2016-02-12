@@ -75,7 +75,7 @@ func validateNetworkConfig(tenant *intent.ConfigTenant) error {
 }
 
 // CreateNetwork creates a network from intent
-func CreateNetwork(network intent.ConfigNetwork, stateDriver core.StateDriver, tenantName string) error {
+func CreateNetwork(network intent.ConfigNetwork, stateDriver core.StateDriver, tenantName string, netctlTriggered bool) error {
 	var extPktTag, pktTag uint
 
 	gCfg := gstate.Cfg{}
@@ -142,19 +142,21 @@ func CreateNetwork(network intent.ConfigNetwork, stateDriver core.StateDriver, t
 	}
 
 	if GetClusterMode() == "docker" {
-		// Create the network in docker
-		err = docknet.CreateDockNet(tenantName, network.Name, "", nwCfg)
-		if err != nil {
-			log.Errorf("Error creating network %s in docker. Err: %v", nwCfg.ID, err)
-			return err
-		}
+		if netctlTriggered {
+			// Create the network in docker
+			err = docknet.CreateDockNet(tenantName, network.Name, "", nwCfg)
+			if err != nil {
+				log.Errorf("Error creating network %s in docker. Err: %v", nwCfg.ID, err)
+				return err
+			}
 
-		// Attach service container endpoint to the network
-		err = attachServiceContainer(tenantName, network.Name, stateDriver)
-		if err != nil {
-			log.Errorf("Error attaching service container to network: %s. Err: %v",
-				networkID, err)
-			return err
+			// Attach service container endpoint to the network
+			err = attachServiceContainer(tenantName, network.Name, stateDriver)
+			if err != nil {
+				log.Errorf("Error attaching service container to network: %s. Err: %v",
+					networkID, err)
+				return err
+			}
 		}
 	}
 
@@ -297,7 +299,7 @@ func CreateNetworks(stateDriver core.StateDriver, tenant *intent.ConfigTenant) e
 	}
 
 	for _, network := range tenant.Networks {
-		err = CreateNetwork(network, stateDriver, tenant.Name)
+		err = CreateNetwork(network, stateDriver, tenant.Name, true)
 		if err != nil {
 			log.Errorf("Error creating network {%+v}. Err: %v", network, err)
 			return err
@@ -329,7 +331,7 @@ func freeNetworkResources(stateDriver core.StateDriver, nwCfg *mastercfg.CfgNetw
 }
 
 // DeleteNetworkID removes a network by ID.
-func DeleteNetworkID(stateDriver core.StateDriver, netID string) error {
+func DeleteNetworkID(stateDriver core.StateDriver, netID string, netctlTriggered bool) error {
 	nwCfg := &mastercfg.CfgNetworkState{}
 	nwCfg.StateDriver = stateDriver
 	err := nwCfg.Read(netID)
@@ -345,10 +347,12 @@ func DeleteNetworkID(stateDriver core.StateDriver, netID string) error {
 			log.Errorf("Error detaching service container. Err: %v", err)
 		}
 
-		// Delete the docker network
-		err = docknet.DeleteDockNet(nwCfg.Tenant, nwCfg.NetworkName, "")
-		if err != nil {
-			log.Errorf("Error deleting network %s. Err: %v", netID, err)
+		if netctlTriggered {
+			// Delete the docker network
+			err = docknet.DeleteDockNet(nwCfg.Tenant, nwCfg.NetworkName, "")
+			if err != nil {
+				log.Errorf("Error deleting network %s. Err: %v", netID, err)
+			}
 		}
 	}
 
